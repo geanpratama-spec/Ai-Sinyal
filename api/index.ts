@@ -718,26 +718,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // 1. Try Claude if selected provider is "claude" or claudeApiKey is supplied
-    if ((provider === "claude" || claudeApiKey) && claudeApiKey?.trim()?.length > 10) {
-      try {
-        const signal = await runClaudeAnalysis(symbol || "ASSET", data, news || [], claudeApiKey);
-        return res.json({ success: true, signal, source: "claude" });
-      } catch (claudeErr: any) {
-        console.warn("Claude API failed, trying Gemini / fallback:", claudeErr.message);
+    let claudeFailureNotice = "";
+    if (provider === "claude" || claudeApiKey) {
+      if (!claudeApiKey || claudeApiKey.trim().length < 10) {
+        claudeFailureNotice = "Claude API key belum dimasukkan di Settings.";
+      } else {
+        try {
+          const signal = await runClaudeAnalysis(symbol || "ASSET", data, news || [], claudeApiKey);
+          return res.json({ success: true, signal, source: "claude" });
+        } catch (claudeErr: any) {
+          const rawMsg = claudeErr.response?.data?.error?.message || claudeErr.message || "";
+          if (rawMsg.includes("x-api-key") || rawMsg.includes("401") || rawMsg.includes("key")) {
+            claudeFailureNotice = "Claude API key tidak valid (401 Unauthorized).";
+          } else {
+            claudeFailureNotice = `Gagal terhubung ke Claude API (${rawMsg.slice(0, 60)}).`;
+          }
+          console.warn("Claude API failed, trying Gemini / fallback:", rawMsg);
+        }
       }
     }
 
     // 2. Try Gemini AI analysis
     try {
       const signal = await runGeminiAnalysis(symbol || "ASSET", data, news || [], apiKey);
+      if (provider === "claude" && claudeFailureNotice) {
+        signal.provider = "Google Gemini 3.6 (Fallback)";
+        signal.reasoning = `[${claudeFailureNotice} Menggunakan Gemini AI]: ${signal.reasoning}`;
+      }
       return res.json({ success: true, signal, source: "gemini" });
     } catch (aiErr: any) {
       console.warn("Gemini AI failed, generating technical indicator fallback signal:", aiErr.message);
       const fallbackSignal = computeTechnicalSignal(symbol || "ASSET", data);
       if (fallbackSignal) {
+        const note = claudeFailureNotice ? `[${claudeFailureNotice}]: ` : "";
         return res.json({
           success: true,
-          signal: { ...fallbackSignal, provider: "Kuantitatif (SMA & RSI)" },
+          signal: { 
+            ...fallbackSignal, 
+            provider: "Kuantitatif (SMA & RSI)",
+            reasoning: note + fallbackSignal.reasoning 
+          },
           source: "technical_fallback"
         });
       }
