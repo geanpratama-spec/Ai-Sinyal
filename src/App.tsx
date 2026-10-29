@@ -1,0 +1,971 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { useState, useEffect, useCallback } from "react";
+import { 
+  TrendingUp, 
+  TrendingDown, 
+  Activity, 
+  BarChart3, 
+  BrainCircuit, 
+  RefreshCw, 
+  AlertCircle,
+  Clock,
+  Navigation,
+  Globe,
+  Coins,
+  Building2,
+  Newspaper,
+  ExternalLink,
+  Database,
+  FileText,
+  History,
+  Key,
+  Settings,
+  Sparkles
+} from "lucide-react";
+import { 
+  AreaChart, 
+  Area, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  Bar,
+  BarChart
+} from "recharts";
+import { motion, AnimatePresence } from "framer-motion";
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+import axios from "axios";
+import { format } from "date-fns";
+import { generateSignal, type MarketData, type TradeSignal, type NewsItem } from "./lib/gemini";
+import { MarketResumeCard } from "./components/MarketResume";
+import { cn, formatCurrency } from "./lib/utils";
+import { EmitSearch } from "./components/EmitSearch";
+
+type MarketType = "crypto" | "forex" | "saham";
+
+const CATEGORIES = [
+  { id: "crypto", label: "Crypto", icon: <Coins className="w-4 h-4" /> },
+  { id: "forex", label: "Forex", icon: <Globe className="w-4 h-4" /> },
+  { id: "saham", label: "Indonesian Stocks", icon: <Building2 className="w-4 h-4" /> },
+];
+
+const SYMBOLS: Record<MarketType, { label: string; value: string }[]> = {
+  crypto: [
+    { label: "Bitcoin (BTC/USDT)", value: "BTCUSDT" },
+    { label: "Ethereum (ETH/USDT)", value: "ETHUSDT" },
+    { label: "Solana (SOL/USDT)", value: "SOLUSDT" },
+    { label: "BNB (BNB/USDT)", value: "BNBUSDT" },
+  ],
+  forex: [
+    { label: "XAU/USD (Gold)", value: "XAUUSD=X" },
+    { label: "XAG/USD (Silver)", value: "XAGUSD=X" },
+    { label: "GBP/JPY", value: "GBPJPY=X" },
+    { label: "AUD/JPY", value: "AUDJPY=X" },
+    { label: "NZD/JPY", value: "NZDJPY=X" },
+    { label: "USD/JPY", value: "USDJPY=X" },
+    { label: "CAD/JPY", value: "CADJPY=X" },
+    { label: "EUR/JPY", value: "EURJPY=X" },
+    { label: "CHF/JPY", value: "CHFJPY=X" },
+    { label: "IDR/USD", value: "IDRUSD=X" },
+  ],
+  saham: [
+    { label: "Bank BCA (BBCA)", value: "BBCA.JK" },
+    { label: "Bank BRI (BBRI)", value: "BBRI.JK" },
+    { label: "Telkom Indonesia (TLKM)", value: "TLKM.JK" },
+    { label: "Astra International (ASII)", value: "ASII.JK" },
+    { label: "GoTo Gojek Tokopedia (GOTO)", value: "GOTO.JK" },
+    { label: "Bank Mandiri (BMRI)", value: "BMRI.JK" },
+    { label: "IHSG Index (^JKSE)", value: "^JKSE" },
+  ]
+};
+
+const INTERVALS = [
+  { label: "1m", value: "1m" },
+  { label: "5m", value: "5m" },
+  { label: "15m", value: "15m" },
+  { label: "1h", value: "1h" },
+  { label: "4h", value: "4h" },
+  { label: "1d", value: "1d" },
+];
+
+export default function App() {
+  const [category, setCategory] = useState<MarketType>("crypto");
+  const [symbol, setSymbol] = useState(SYMBOLS.crypto[0].value);
+  const [interval, setInterval] = useState("1h");
+  const [data, setData] = useState<MarketData[]>([]);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [signal, setSignal] = useState<TradeSignal | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [fundamentals, setFundamentals] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showDashboard, setShowDashboard] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [aiProvider, setAiProvider] = useState<"gemini" | "claude">((localStorage.getItem("AI_PROVIDER") as any) || "gemini");
+  const [tempApiKey, setTempApiKey] = useState(localStorage.getItem("GEMINI_API_KEY") || "");
+  const [tempClaudeKey, setTempClaudeKey] = useState(localStorage.getItem("CLAUDE_API_KEY") || "");
+  const [sahamTab, setSahamTab] = useState<"chart" | "search">("chart");
+
+  const fetchFundamentals = useCallback(async () => {
+    if (category !== "saham" || !symbol || symbol.startsWith("^")) {
+      setFundamentals(null);
+      return;
+    }
+    try {
+      const res = await axios.get("/api/stock-fundamentals", { params: { symbol } });
+      setFundamentals(res.data);
+    } catch (err) {
+      console.error("Fundamental fetch error:", err);
+    }
+  }, [symbol, category]);
+
+  const fetchData = useCallback(async (retries = 2) => {
+    if (!symbol || symbol.length < 3 && !symbol.startsWith("^")) {
+      setData([]);
+      return;
+    }
+    setLoading(true);
+    fetchFundamentals();
+    try {
+      const marketRes = await axios.get(`/api/market-data`, {
+        params: { symbol, interval, limit: 100, type: category },
+        timeout: 15000 // 15s timeout
+      });
+      setData(marketRes.data || []);
+      setError(null);
+    } catch (err: any) {
+      console.error("Fetch data error:", err.message);
+      if (retries > 0) {
+        console.log(`Retrying fetch data for ${symbol}... (${retries} left)`);
+        setTimeout(() => fetchData(retries - 1), 2000);
+      } else {
+        const message = err.response?.data?.error || "Gagal mengambil data pasar. Jaringan sibuk atau simbol tidak valid.";
+        setError(message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [symbol, interval, category, fetchFundamentals]);
+
+  const fetchNews = useCallback(async () => {
+    if (!symbol || symbol.length < 3 && !symbol.startsWith("^")) {
+      setNews([]);
+      return;
+    }
+    setNewsLoading(true);
+    try {
+      const newsRes = await axios.get(`/api/news`, {
+        params: { symbol, type: category }
+      });
+      setNews(newsRes.data || []);
+    } catch (err) {
+      console.error("News fetch error:", err);
+    } finally {
+      setNewsLoading(false);
+    }
+  }, [symbol, category]);
+
+  useEffect(() => {
+    // Check backend health
+    axios.get("/api/health")
+      .then(() => console.log("Backend connection healthy"))
+      .catch(err => {
+        console.error("Backend unreachable:", err);
+        setError("Koneksi ke server backend gagal. Pastikan server sedang berjalan.");
+      });
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+        fetchNews();
+    }, 1000); // 1s delay to prioritize chart data
+    return () => clearTimeout(timer);
+  }, [fetchNews]);
+
+  // Handle category change
+  useEffect(() => {
+    setSymbol(SYMBOLS[category][0].value);
+    setSignal(null);
+    setSahamTab("chart");
+  }, [category]);
+
+  const handleAnalyze = async () => {
+    if (data.length === 0) return;
+    setAnalyzing(true);
+    setSignal(null);
+    setError(null);
+    try {
+      const newSignal = await generateSignal(symbol, data, news);
+      if (!newSignal) {
+        throw new Error("Analisis AI tidak mengembalikan hasil. Pastikan data cukup.");
+      }
+      setSignal(newSignal);
+    } catch (err: any) {
+      console.error("AI Analysis Error:", err);
+      const message = err.message || "Analisis AI gagal. Cobalah sesaat lagi.";
+      setError(message);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const currentPrice = data[data.length - 1]?.close || 0;
+  const priceChange = data.length > 1 && data[data.length - 2]?.close ? currentPrice - data[data.length - 2].close : 0;
+  const priceChangePct = data.length > 1 && data[data.length - 2]?.close ? (priceChange / data[data.length - 2].close) * 100 : 0;
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-emerald-500/30 pb-20 sm:pb-0">
+      {/* Header Mobile / Desktop optimized */}
+      <header className="border-b border-white/10 bg-black/80 backdrop-blur-xl sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 h-14 sm:h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 sm:p-2 bg-emerald-500/10 rounded-lg">
+              <BrainCircuit className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-500" />
+            </div>
+            <h1 className="font-black text-base sm:text-xl tracking-tighter">
+              AI<span className="hidden xs:inline"> Trade</span> <span className="text-emerald-500">Signal</span>
+            </h1>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-2 mr-2">
+              <div className="relative group">
+                <input 
+                  type="text" 
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+                  placeholder="Kode"
+                  className="bg-white/5 border border-white/10 rounded-lg pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono w-32"
+                />
+                <Navigation className="w-3 h-3 text-white/20 absolute right-3 top-1/2 -translate-y-1/2 group-focus-within:text-emerald-500" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 sm:gap-2">
+              <button 
+                onClick={fetchData}
+                disabled={loading}
+                className="p-2 hover:bg-white/5 rounded-lg transition-colors group"
+              >
+                <RefreshCw className={cn("w-4 h-4 text-white/60 group-hover:text-white", loading && "animate-spin")} />
+              </button>
+              <button 
+                onClick={() => setShowDashboard(!showDashboard)}
+                className={cn(
+                  "p-2 rounded-lg transition-colors",
+                  showDashboard ? "bg-emerald-500/20 text-emerald-500" : "bg-white/5 text-white/40"
+                )}
+              >
+                <BarChart3 className="w-4 h-4 sm:w-5 h-5" />
+              </button>
+              <button 
+                onClick={() => setShowSettings(true)}
+                className="p-2 hover:bg-white/5 rounded-lg transition-colors group"
+              >
+                <Settings className="w-4 h-4 text-white/60 group-hover:text-white" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Global Category Switcher - Mobile focused tabs */}
+        <div className="border-t border-white/5 bg-black/30 overflow-x-auto no-scrollbar">
+          <div className="max-w-7xl mx-auto px-4 py-1.5 flex items-center gap-1 min-w-max">
+            {CATEGORIES.map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => setCategory(cat.id as MarketType)}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap",
+                  category === cat.id ? "bg-emerald-500 text-black shadow-lg" : "text-white/40 hover:text-white"
+                )}
+              >
+                {cat.icon}
+                {cat.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto p-3 sm:p-6 lg:p-8 space-y-4 sm:space-y-6">
+        {category === "saham" && (
+          <div className="flex bg-white/5 border border-white/10 p-1 rounded-xl max-w-sm">
+            <button
+              onClick={() => setSahamTab("chart")}
+              className={cn(
+                "flex-1 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
+                sahamTab === "chart" ? "bg-emerald-500 text-black font-black" : "text-white/40 hover:text-white"
+              )}
+            >
+              Chart & Sinyal AI
+            </button>
+            <button
+              onClick={() => setSahamTab("search")}
+              className={cn(
+                "flex-1 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
+                sahamTab === "search" ? "bg-emerald-500 text-black font-black" : "text-white/40 hover:text-white"
+              )}
+            >
+              Cari Emiten BEI
+            </button>
+          </div>
+        )}
+
+        {category === "saham" && sahamTab === "search" ? (
+          <motion.div
+            key="saham-search-tab"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <EmitSearch />
+          </motion.div>
+        ) : (
+          <>
+            {/* Dashboards Ringkasan - Mobile Optimized Grid */}
+        <AnimatePresence mode="popLayout">
+          {showDashboard && (
+            <motion.div 
+              key="dashboard"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-2">
+                <MarketResumeCard 
+                  title="Crypto Trending" 
+                  category="crypto" 
+                  symbols={["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT"]} 
+                />
+                <MarketResumeCard 
+                  title="Forex & Gold" 
+                  category="forex" 
+                  symbols={["XAUUSD=X", "USDJPY=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "CADJPY=X"]} 
+                />
+                <MarketResumeCard 
+                  title="Saham ID (IHSG)" 
+                  category="saham" 
+                  symbols={["^JKSE", "BBCA.JK", "BBRI.JK", "TLKM.JK", "BMRI.JK", "ASII.JK"]} 
+                />
+              </div>
+            </motion.div>
+          )}
+
+          {/* Fundamental Analysis for Saham */}
+          {category === "saham" && fundamentals && (
+            <motion.div 
+              key={`fund-${fundamentals.symbol}`}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white/5 border border-white/10 rounded-2xl p-6 overflow-hidden relative"
+            >
+              <div className="absolute top-0 right-0 p-8 opacity-[0.03] pointer-events-none">
+                <FileText className="w-48 h-48" />
+              </div>
+              
+              <div className="flex items-center gap-2 mb-6">
+                <div className="p-2 bg-blue-500/20 rounded-lg">
+                  <Database className="w-5 h-5 text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-white font-bold">Analisis Fundamental</h3>
+                  <p className="text-white/40 text-[10px] uppercase tracking-widest font-bold">Data Keuangan Historis</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                {[
+                  { label: "Price to Book (PBV)", value: fundamentals.pbv, suffix: "x" },
+                  { label: "Price / Earnings (PER)", value: fundamentals.per, suffix: "x" },
+                  { label: "Earn. Per Share (EPS)", value: fundamentals.eps, prefix: "Rp " },
+                  { label: "Dividend Yield", value: (fundamentals.dividendYield * 100).toFixed(2), suffix: "%" },
+                ].map((stat, i) => (
+                  <div key={i} className="bg-white/5 p-4 rounded-xl border border-white/5">
+                    <div className="text-white/40 text-[10px] font-bold uppercase tracking-wider mb-1">{stat.label}</div>
+                    <div className="text-xl font-mono font-bold text-white">
+                      {typeof stat.value === 'number' ? `${stat.prefix || ''}${stat.value.toLocaleString('id-ID')}${stat.suffix || ''}` : stat.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <h4 className="text-white/80 text-xs font-bold uppercase tracking-widest mb-4 flex items-center gap-2">
+                    <TrendingUp className="w-3 h-3 text-emerald-400" />
+                    Riwayat Laba Bersih (3-4 Tahun Terakhir)
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm font-mono">
+                      <thead>
+                        <tr className="text-white/30 border-b border-white/5">
+                          <th className="pb-2 font-medium">Tahun</th>
+                          <th className="pb-2 font-medium text-right">Laba Bersih</th>
+                          <th className="pb-2 font-medium text-right">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fundamentals.earningsHistory?.map((h: any, idx: number) => {
+                          const year = new Date(h.date).getFullYear();
+                          const prev = fundamentals.earningsHistory?.[idx + 1];
+                          const growth = prev ? ((h.netIncome - prev.netIncome) / Math.abs(prev.netIncome)) * 100 : null;
+                          return (
+                            <tr key={`${year}-${idx}`} className="border-b border-white/5 last:border-0">
+                              <td className="py-3 text-white/60">{year}</td>
+                              <td className="py-3 text-right text-white font-bold">
+                                {new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', notation: 'compact' }).format(h.netIncome)}
+                              </td>
+                              <td className={cn(
+                                "py-3 text-right font-bold text-[10px]",
+                                growth === null ? "text-white/40" : (growth > 0 ? "text-emerald-400" : "text-rose-400")
+                              )}>
+                                {growth !== null ? `${growth > 0 ? '▲' : '▼'} ${Math.abs(growth).toFixed(1)}%` : '-'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-white/10">
+                  <h4 className="text-white/80 text-xs font-bold uppercase tracking-widest mb-4 flex items-center gap-2">
+                    <History className="w-3 h-3 text-blue-400" />
+                    Kas & Utang (Neraca)
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm font-mono">
+                      <thead>
+                        <tr className="text-white/30 border-b border-white/5">
+                          <th className="pb-2 font-medium">Tahun</th>
+                          <th className="pb-2 font-medium text-right">Kas & Setara Kas</th>
+                          <th className="pb-2 font-medium text-right">Total Utang</th>
+                          <th className="pb-2 font-medium text-right">Cash/Debt Ratio</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fundamentals.balanceHistory?.map((h: any, idx: number) => {
+                          const year = new Date(h.date).getFullYear();
+                          return (
+                            <tr key={`${year}-${idx}`} className="border-b border-white/5 last:border-0">
+                              <td className="py-3 text-white/60">{year}</td>
+                            <td className="py-3 text-right text-emerald-400">
+                              {new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', notation: 'compact' }).format(h.cash)}
+                            </td>
+                            <td className="py-3 text-right text-rose-400">
+                              {new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', notation: 'compact' }).format(h.totalDebt)}
+                            </td>
+                            <td className="py-3 text-right text-white">
+                              {(h.cash / (h.totalDebt || 1)).toFixed(2)}x
+                            </td>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Error Alert */}
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl flex items-center gap-3 text-red-400"
+          >
+            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+            <p className="text-sm">{error}</p>
+          </motion.div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main Chart Area */}
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-6 overflow-hidden">
+              {/* Symbol selector mobile optimized */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
+                <div className="flex items-center justify-between sm:justify-start gap-4">
+                  <div>
+                    <h2 className="text-2xl sm:text-3xl font-bold font-mono tracking-tighter">
+                      {formatCurrency(currentPrice, symbol, category)}
+                    </h2>
+                    <div className={cn(
+                      "flex items-center gap-1 text-xs sm:text-sm font-medium mt-0.5",
+                      priceChange >= 0 ? "text-emerald-500" : "text-rose-500"
+                    )}>
+                      {priceChange >= 0 ? <TrendingUp className="w-3 h-3 sm:w-4 sm:h-4" /> : <TrendingDown className="w-3 h-3 sm:w-4 sm:h-4" />}
+                      {priceChange >= 0 ? "+" : ""}{priceChangePct.toFixed(2)}%
+                    </div>
+                  </div>
+
+                  <div className="sm:hidden flex items-center gap-2">
+                    <select 
+                      value={interval}
+                      onChange={(e) => setInterval(e.target.value)}
+                      className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs focus:ring-emerald-500 font-bold"
+                    >
+                      {INTERVALS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 sm:flex-none relative">
+                    <select 
+                      value={symbol}
+                      onChange={(e) => setSymbol(e.target.value)}
+                      className="w-full sm:w-auto bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 sm:py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono font-black"
+                    >
+                      {SYMBOLS[category].map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="hidden sm:flex flex-col items-end gap-1">
+                    <span className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Volume (24h)</span>
+                    <span className="font-mono text-sm">
+                      {data.length > 0 ? (data[data.length - 1].volume).toLocaleString() : "0"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="h-[300px] sm:h-[400px] w-full">
+                {!loading && data.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%" minHeight={300} minWidth={1}>
+                    <AreaChart data={data}>
+                      <defs>
+                        <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={priceChange >= 0 ? "#10b981" : "#f43f5e"} stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor={priceChange >= 0 ? "#10b981" : "#f43f5e"} stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                      <XAxis 
+                        dataKey="time" 
+                        stroke="rgba(255,255,255,0.2)" 
+                        fontSize={10}
+                        tickFormatter={(val) => format(val, 'HH:mm')}
+                        minTickGap={20}
+                        tick={{ fill: 'rgba(255,255,255,0.4)' }}
+                      />
+                      <YAxis 
+                        domain={['auto', 'auto']} 
+                        orientation="right"
+                        stroke="rgba(255,255,255,0.2)" 
+                        fontSize={10}
+                        tick={{ fill: 'rgba(255,255,255,0.4)' }}
+                        tickFormatter={(val) => {
+                          const formatted = formatCurrency(val, symbol, category);
+                          return formatted.replace(/[^\d.,]/g, '').trim();
+                        }}
+                      />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#141414', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
+                        labelStyle={{ color: 'rgba(255,255,255,0.5)', fontSize: '10px' }}
+                        labelFormatter={(val) => format(val, 'MMM dd, HH:mm')}
+                        itemStyle={{ color: '#fff', fontWeight: 'bold', fontSize: '12px' }}
+                        formatter={(val: number) => [formatCurrency(val, symbol, category), "Price"]}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="close" 
+                        stroke={priceChange >= 0 ? "#10b981" : "#f43f5e"} 
+                        strokeWidth={2}
+                        fillOpacity={1} 
+                        fill="url(#colorPrice)" 
+                        animationDuration={1000}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full w-full flex flex-col items-center justify-center bg-white/5 border border-dashed border-white/10 rounded-2xl gap-3">
+                    <RefreshCw className={cn("w-6 h-6 sm:w-8 sm:h-8 text-white/10", loading && "animate-spin")} />
+                    <p className="text-[9px] sm:text-[10px] uppercase tracking-widest text-white/20 font-bold text-center px-4">
+                      {loading ? "Memuat Data Pasar..." : "Data Tidak Tersedia"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Quick Stats Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+              {[
+                { label: "High", value: Math.max(...data.map(d => d.high), 0), icon: <Activity className="w-3 h-3 sm:w-4 h-4 text-emerald-400" /> },
+                { label: "Low", value: Math.min(...data.map(d => d.low), 9999999), icon: <Activity className="w-3 h-3 sm:w-4 h-4 text-rose-400 rotate-180" /> },
+                { label: "Average", value: data.reduce((acc, d) => acc + d.close, 0) / (data.length || 1), icon: <BarChart3 className="w-3 h-3 sm:w-4 h-4 text-blue-400" /> },
+                { label: "Points", value: data.length, icon: <Clock className="w-3 h-3 sm:w-4 h-4 text-white/20" /> },
+              ].map((stat, i) => (
+                <div key={i} className="bg-white/5 border border-white/10 p-3 sm:p-4 rounded-xl">
+                  <div className="flex items-center gap-2 text-white/40 text-[9px] sm:text-xs uppercase tracking-widest mb-1 font-bold">
+                    {stat.icon}
+                    {stat.label}
+                  </div>
+                  <div className="font-mono text-sm sm:text-base font-bold">
+                    {typeof stat.value === 'number' && stat.label !== 'Points' 
+                      ? formatCurrency(stat.value, symbol, category)
+                      : stat.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* News Section */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-500/10 rounded-lg">
+                  <Newspaper className="w-5 h-5 text-blue-500" />
+                </div>
+                <h3 className="font-bold text-lg tracking-tight">Berita Terkait {symbol}</h3>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {newsLoading ? (
+                  [1, 2, 3, 4].map((i) => (
+                    <div key={i} className="animate-pulse bg-white/5 border border-white/10 p-4 rounded-xl h-24" />
+                  ))
+                ) : news.length > 0 ? news.map((item, i) => (
+                  <motion.a
+                    key={i}
+                    href={item.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.1 }}
+                    className="group bg-white/5 border border-white/10 p-4 rounded-xl hover:border-white/20 transition-all block"
+                  >
+                    <div className="flex flex-col h-full justify-between gap-3">
+                      <div className="space-y-2">
+                        <div className="text-[10px] uppercase tracking-widest text-white/40 font-bold flex items-center gap-2">
+                          <span className="text-blue-400">{item.publisher}</span>
+                        </div>
+                        <h4 className="text-sm font-semibold line-clamp-2 leading-relaxed group-hover:text-blue-400 transition-colors">
+                          {item.title}
+                        </h4>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-white/30 font-semibold uppercase tracking-tighter pt-2 border-t border-white/5">
+                        Lihat Selengkapnya
+                        <ExternalLink className="w-3 h-3 transition-transform group-hover:translate-x-1" />
+                      </div>
+                    </div>
+                  </motion.a>
+                )) : (
+                  <div className="col-span-full py-12 text-center border border-dashed border-white/10 rounded-2xl">
+                    <p className="text-xs text-white/20 uppercase tracking-[0.3em] font-bold">Tidak ada berita terbaru ditemukan</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* AI Signal Sidebar */}
+          <div className="space-y-4 sm:space-y-6">
+            <button 
+              onClick={handleAnalyze}
+              disabled={analyzing || loading}
+              className="w-full h-14 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 disabled:bg-white/10 text-black font-black rounded-2xl flex items-center justify-center gap-3 transition-all transform active:scale-[0.98] shadow-lg shadow-emerald-500/20"
+            >
+              {analyzing ? (
+                <>
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                  ANALYZING...
+                </>
+              ) : (
+                <>
+                  <BrainCircuit className="w-5 h-5" />
+                  MINTA SINYAL AI
+                </>
+              )}
+            </button>
+
+            <AnimatePresence mode="wait">
+              {signal ? (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="bg-white/5 border border-white/10 rounded-3xl overflow-hidden shadow-2xl relative"
+                >
+                  {/* Confidence Badge */}
+                  <div className="absolute top-4 right-4 bg-black/60 backdrop-blur-md px-2 py-1 rounded-full border border-white/10 flex items-center gap-1.5 z-10">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-[10px] uppercase tracking-tighter font-black text-white/90">
+                      {signal.confidence}% Confidence
+                    </span>
+                  </div>
+
+                  <div className={cn(
+                    "h-1.5",
+                    signal.action === "BUY" ? "bg-emerald-500" : signal.action === "SELL" ? "bg-rose-500" : "bg-amber-500"
+                  )} />
+                  
+                  <div className="p-5 sm:p-6 space-y-5 sm:space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 italic">Rekomendasi</h3>
+                        <div className={cn(
+                          "text-3xl sm:text-4xl font-black italic tracking-tighter",
+                          signal.action === "BUY" ? "text-emerald-500" : signal.action === "SELL" ? "text-rose-500" : "text-amber-500"
+                        )}>
+                          {signal.action}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <h3 className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 italic">Entry</h3>
+                        <div className="text-xl sm:text-2xl font-mono font-bold">{formatCurrency(signal.price, symbol, category)}</div>
+                      </div>
+                    </div>
+
+                    <div className="bg-black/60 rounded-2xl p-4 border border-white/5">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-emerald-500 flex items-center gap-2 italic">
+                          <AlertCircle className="w-3 h-3" />
+                          AI Reasoning
+                        </h4>
+                        {signal.provider && (
+                          <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                            {signal.provider}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs sm:text-sm leading-relaxed text-white/70 italic">
+                        "{signal.reasoning}"
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                      <div className="bg-emerald-500/5 border border-emerald-500/10 p-3 rounded-xl">
+                        <div className="text-emerald-500/40 text-[9px] font-bold uppercase tracking-wider mb-1">Target TP</div>
+                        <div className="space-y-1">
+                          {signal.targets.map((t, idx) => (
+                            <div key={idx} className="font-mono text-xs sm:text-sm text-emerald-400 font-bold flex items-center gap-2">
+                              <TrendingUp className="w-3 h-3 opacity-50" />
+                              {formatCurrency(t, symbol, category)}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="bg-rose-500/5 border border-rose-500/10 p-3 rounded-xl text-right">
+                        <div className="text-rose-500/40 text-[9px] font-bold uppercase tracking-wider mb-1">Stop Loss</div>
+                        <div className="font-mono text-xs sm:text-sm text-rose-400 font-bold flex items-center justify-end gap-2">
+                          {formatCurrency(signal.stopLoss, symbol, category)}
+                          <TrendingDown className="w-3 h-3 opacity-50" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[9px] text-white/20 font-bold uppercase tracking-widest pt-2 border-t border-white/5">
+                      <Clock className="w-3 h-3" />
+                      Generated at: {format(signal.timestamp, 'HH:mm:ss')}
+                    </div>
+                  </div>
+                </motion.div>
+              ) : (
+                <div className="bg-white/5 border border-dashed border-white/10 rounded-3xl p-8 sm:p-12 flex flex-col items-center justify-center text-center gap-4">
+                  <div className="p-4 bg-white/5 rounded-full">
+                    <Navigation className="w-6 h-6 sm:w-8 sm:h-8 text-white/5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-widest mb-1 text-white/40">Sinyal Kosong</h3>
+                    <p className="text-[10px] text-white/20 leading-relaxed max-w-[160px] font-bold">
+                      Klik tombol di atas untuk memulai analisis pasar.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                <div className="text-[10px] text-amber-500/80 leading-relaxed uppercase font-bold tracking-tight">
+                  <span className="text-amber-500">DISCLAIMER:</span> Trading aset finansial memiliki risiko tinggi. Sinyal AI hanya sebagai alat bantu. Gunakan strategi manajemen risiko yang ketat.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        </>
+        )}
+      </main>
+
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-zinc-900 border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl"
+            >
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-emerald-500/20 rounded-lg">
+                  <Settings className="w-5 h-5 text-emerald-500" />
+                </div>
+                <h3 className="text-xl font-bold text-white">Settings</h3>
+              </div>
+
+              <div className="space-y-5">
+                {/* Provider Selector */}
+                <div>
+                  <label className="block text-xs font-bold text-white/50 uppercase tracking-widest mb-2 ml-1">
+                    Pilih AI Engine Provider
+                  </label>
+                  <div className="grid grid-cols-2 gap-2 p-1 bg-white/5 border border-white/10 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setAiProvider("gemini")}
+                      className={cn(
+                        "py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2",
+                        aiProvider === "gemini"
+                          ? "bg-emerald-500 text-black shadow-md"
+                          : "text-white/60 hover:text-white hover:bg-white/5"
+                      )}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Google Gemini
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAiProvider("claude")}
+                      className={cn(
+                        "py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2",
+                        aiProvider === "claude"
+                          ? "bg-purple-500 text-white shadow-md"
+                          : "text-white/60 hover:text-white hover:bg-white/5"
+                      )}
+                    >
+                      <BrainCircuit className="w-3.5 h-3.5" />
+                      Anthropic Claude
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status Banner */}
+                {aiProvider === "gemini" ? (
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                    <div>
+                      <div className="text-xs font-bold text-emerald-400">Gemini Engine Aktif</div>
+                      <div className="text-[11px] text-white/60">Didukung Google Gemini 3.6 Flash via server backend terintegrasi.</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center gap-3">
+                    <div className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse shrink-0" />
+                    <div>
+                      <div className="text-xs font-bold text-purple-400">Claude Engine Aktif</div>
+                      <div className="text-[11px] text-white/60">Memakai Anthropic Claude 3.5 Sonnet / Haiku via API Key pribadi Anda.</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Claude Key Input */}
+                {aiProvider === "claude" && (
+                  <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
+                    <label className="block text-xs font-bold text-purple-400 uppercase tracking-widest mb-1.5 ml-1">
+                      Claude API Key (sk-ant-...)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="password"
+                        value={tempClaudeKey}
+                        onChange={(e) => setTempClaudeKey(e.target.value)}
+                        placeholder="sk-ant-api03-..."
+                        className="w-full bg-purple-500/10 border border-purple-500/30 rounded-xl px-10 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all font-mono"
+                      />
+                      <Key className="w-4 h-4 text-purple-400/50 absolute left-4 top-1/2 -translate-y-1/2" />
+                    </div>
+                    <p className="mt-2 text-[10px] text-white/40 leading-relaxed font-semibold ml-1">
+                      Masukkan Claude API Key dari Anthropic Console (<a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">console.anthropic.com</a>). Kunci Anda aman & disimpan di browser lokal.
+                    </p>
+                  </motion.div>
+                )}
+
+                {/* Gemini Custom Key Input */}
+                {aiProvider === "gemini" && (
+                  <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
+                    <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-1.5 ml-1">
+                      Custom Gemini API Key (Opsional)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="password"
+                        value={tempApiKey}
+                        onChange={(e) => setTempApiKey(e.target.value)}
+                        placeholder="Kosongkan untuk memakai Server Key default"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-10 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
+                      />
+                      <Key className="w-4 h-4 text-white/20 absolute left-4 top-1/2 -translate-y-1/2" />
+                    </div>
+                    <p className="mt-2 text-[10px] text-white/30 leading-relaxed font-bold ml-1">
+                      Kosongkan untuk menggunakan Server Gemini Key bawaan aplikasi, atau masukkan key Anda dari <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline">Google AI Studio</a>.
+                    </p>
+                  </motion.div>
+                )}
+              </div>
+
+              <div className="flex gap-3 mt-8">
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.setItem("AI_PROVIDER", aiProvider);
+                    if (tempApiKey.trim()) localStorage.setItem("GEMINI_API_KEY", tempApiKey.trim());
+                    else localStorage.removeItem("GEMINI_API_KEY");
+
+                    if (tempClaudeKey.trim()) localStorage.setItem("CLAUDE_API_KEY", tempClaudeKey.trim());
+                    else localStorage.removeItem("CLAUDE_API_KEY");
+
+                    setShowSettings(false);
+                  }}
+                  className={cn(
+                    "flex-1 py-3 text-black font-extrabold rounded-xl text-xs uppercase tracking-widest transition-colors shadow-lg",
+                    aiProvider === "claude" ? "bg-purple-400 hover:bg-purple-300" : "bg-emerald-500 hover:bg-emerald-400"
+                  )}
+                >
+                  Simpan & Terapkan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(false)}
+                  className="py-3 px-5 bg-white/10 text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-white/20 transition-colors"
+                >
+                  Batal
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      
+      {/* Background Decor */}
+      <div className="fixed inset-0 pointer-events-none opacity-20 overflow-hidden -z-10">
+        <div className="absolute -top-1/4 -right-1/4 w-1/2 h-1/2 bg-emerald-500/30 blur-[120px] rounded-full" />
+        <div className="absolute -bottom-1/4 -left-1/4 w-1/2 h-1/2 bg-rose-500/20 blur-[120px] rounded-full" />
+      </div>
+    </div>
+  );
+}
