@@ -19,6 +19,7 @@ export interface TradeSignal {
   stopLoss: number;
   timestamp: number;
   provider?: string;
+  timeframe?: string;
 }
 
 export interface NewsItem {
@@ -30,7 +31,8 @@ export interface NewsItem {
 export const generateSignal = async (
   symbol: string,
   data: MarketData[],
-  news?: NewsItem[]
+  news?: NewsItem[],
+  timeframe: string = "24H"
 ): Promise<TradeSignal | null> => {
   if (!data || data.length === 0) return null;
 
@@ -48,6 +50,7 @@ export const generateSignal = async (
         apiKey: customKey.trim() || undefined,
         claudeApiKey: claudeKey.trim() || undefined,
         provider,
+        timeframe,
       },
       {
         headers: { "Content-Type": "application/json" },
@@ -77,7 +80,7 @@ export const generateSignal = async (
       action,
       price: currentPrice,
       confidence: 72,
-      reasoning: `Analisis teknikal kuantitatif untuk ${symbol}: Indikator SMA-7 (${sma7.toFixed(2)}) bergerak ${isBull ? "di atas" : "di bawah"} SMA-21 (${sma21.toFixed(2)}) menunjukkan momentum ${isBull ? "Bullish Accumulation" : "Bearish Distribution"}.`,
+      reasoning: `Analisis teknikal kuantitatif untuk ${symbol} (Timeframe: ${timeframe}): Indikator SMA-7 (${sma7.toFixed(2)}) bergerak ${isBull ? "di atas" : "di bawah"} SMA-21 (${sma21.toFixed(2)}) menunjukkan momentum ${isBull ? "Bullish Accumulation" : "Bearish Distribution"}.`,
       targets: [
         Number((currentPrice * (1 + 0.025 * mult)).toFixed(4)),
         Number((currentPrice * (1 + 0.05 * mult)).toFixed(4)),
@@ -85,6 +88,7 @@ export const generateSignal = async (
       stopLoss: Number((currentPrice * (1 - 0.025 * mult)).toFixed(4)),
       timestamp: Date.now(),
       provider: "Kuantitatif (SMA-7/21)",
+      timeframe,
     };
   }
 };

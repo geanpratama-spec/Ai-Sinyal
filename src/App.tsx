@@ -113,6 +113,15 @@ export default function App() {
   const [tempClaudeKey, setTempClaudeKey] = useState(localStorage.getItem("CLAUDE_API_KEY") || "");
   const [sahamTab, setSahamTab] = useState<"chart" | "search">("chart");
 
+  const [signalTimeframe, setSignalTimeframe] = useState<"1H" | "6H" | "24H" | "1W">("24H");
+  const [newsLang, setNewsLang] = useState<"id" | "en">("id");
+
+  const handleSelectSymbol = (selectedSym: string, selectedCat: MarketType) => {
+    setCategory(selectedCat);
+    setSymbol(selectedSym);
+    setSignal(null);
+  };
+
   const fetchFundamentals = useCallback(async () => {
     if (category !== "saham" || !symbol || symbol.startsWith("^")) {
       setFundamentals(null);
@@ -162,7 +171,7 @@ export default function App() {
     setNewsLoading(true);
     try {
       const newsRes = await axios.get(`/api/news`, {
-        params: { symbol, type: category }
+        params: { symbol, type: category, lang: newsLang }
       });
       setNews(newsRes.data || []);
     } catch (err) {
@@ -170,7 +179,7 @@ export default function App() {
     } finally {
       setNewsLoading(false);
     }
-  }, [symbol, category]);
+  }, [symbol, category, newsLang]);
 
   useEffect(() => {
     // Check backend health
@@ -206,7 +215,7 @@ export default function App() {
     setSignal(null);
     setError(null);
     try {
-      const newSignal = await generateSignal(symbol, data, news);
+      const newSignal = await generateSignal(symbol, data, news, signalTimeframe);
       if (!newSignal) {
         throw new Error("Analisis AI tidak mengembalikan hasil. Pastikan data cukup.");
       }
@@ -348,16 +357,22 @@ export default function App() {
                   title="Crypto Trending" 
                   category="crypto" 
                   symbols={["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT"]} 
+                  activeSymbol={symbol}
+                  onSelectSymbol={handleSelectSymbol}
                 />
                 <MarketResumeCard 
                   title="Forex & Gold" 
                   category="forex" 
                   symbols={["XAUUSD=X", "USDJPY=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "CADJPY=X"]} 
+                  activeSymbol={symbol}
+                  onSelectSymbol={handleSelectSymbol}
                 />
                 <MarketResumeCard 
                   title="Saham ID (IHSG)" 
                   category="saham" 
                   symbols={["^JKSE", "BBCA.JK", "BBRI.JK", "TLKM.JK", "BMRI.JK", "ASII.JK"]} 
+                  activeSymbol={symbol}
+                  onSelectSymbol={handleSelectSymbol}
                 />
               </div>
             </motion.div>
@@ -519,9 +534,9 @@ export default function App() {
                     <select 
                       value={interval}
                       onChange={(e) => setInterval(e.target.value)}
-                      className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs focus:ring-emerald-500 font-bold"
+                      className="bg-zinc-900 text-white border border-white/20 rounded-lg px-2 py-1 text-xs focus:ring-emerald-500 font-bold"
                     >
-                      {INTERVALS.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+                      {INTERVALS.map(i => <option key={i.value} value={i.value} className="bg-zinc-900 text-white py-1">{i.label}</option>)}
                     </select>
                   </div>
                 </div>
@@ -531,9 +546,9 @@ export default function App() {
                     <select 
                       value={symbol}
                       onChange={(e) => setSymbol(e.target.value)}
-                      className="w-full sm:w-auto bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 sm:py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono font-black"
+                      className="w-full sm:w-auto bg-zinc-900 text-white border border-white/20 rounded-xl px-4 py-2.5 sm:py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono font-black cursor-pointer shadow-md"
                     >
-                      {SYMBOLS[category].map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                      {SYMBOLS[category].map(s => <option key={s.value} value={s.value} className="bg-zinc-900 text-white py-2 font-medium">{s.label}</option>)}
                     </select>
                   </div>
                   <div className="hidden sm:flex flex-col items-end gap-1">
@@ -628,11 +643,35 @@ export default function App() {
 
             {/* News Section */}
             <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-500/10 rounded-lg">
-                  <Newspaper className="w-5 h-5 text-blue-500" />
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-500/10 rounded-lg">
+                    <Newspaper className="w-5 h-5 text-blue-500" />
+                  </div>
+                  <h3 className="font-bold text-lg tracking-tight">Berita Terkait {symbol}</h3>
                 </div>
-                <h3 className="font-bold text-lg tracking-tight">Berita Terkait {symbol}</h3>
+
+                {/* News Language Switcher */}
+                <div className="flex items-center bg-white/5 border border-white/10 p-0.5 rounded-lg text-xs">
+                  <button
+                    onClick={() => setNewsLang("id")}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md font-bold transition-all text-[11px]",
+                      newsLang === "id" ? "bg-blue-500 text-white shadow" : "text-white/40 hover:text-white"
+                    )}
+                  >
+                    🇮🇩 ID
+                  </button>
+                  <button
+                    onClick={() => setNewsLang("en")}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md font-bold transition-all text-[11px]",
+                      newsLang === "en" ? "bg-blue-500 text-white shadow" : "text-white/40 hover:text-white"
+                    )}
+                  >
+                    🇬🇧 EN
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -643,26 +682,26 @@ export default function App() {
                 ) : news.length > 0 ? news.map((item, i) => (
                   <motion.a
                     key={i}
-                    href={item.link}
+                    href={item.link || `https://finance.yahoo.com/quote/${symbol}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: i * 0.1 }}
-                    className="group bg-white/5 border border-white/10 p-4 rounded-xl hover:border-white/20 transition-all block"
+                    className="group bg-white/5 border border-white/10 p-4 rounded-xl hover:border-blue-500/40 hover:bg-blue-500/5 transition-all block cursor-pointer"
                   >
                     <div className="flex flex-col h-full justify-between gap-3">
                       <div className="space-y-2">
                         <div className="text-[10px] uppercase tracking-widest text-white/40 font-bold flex items-center gap-2">
-                          <span className="text-blue-400">{item.publisher}</span>
+                          <span className="text-blue-400">{item.publisher || "Media"}</span>
                         </div>
                         <h4 className="text-sm font-semibold line-clamp-2 leading-relaxed group-hover:text-blue-400 transition-colors">
                           {item.title}
                         </h4>
                       </div>
-                      <div className="flex items-center justify-between text-[10px] text-white/30 font-semibold uppercase tracking-tighter pt-2 border-t border-white/5">
-                        Lihat Selengkapnya
-                        <ExternalLink className="w-3 h-3 transition-transform group-hover:translate-x-1" />
+                      <div className="flex items-center justify-between text-[10px] text-blue-400/80 font-bold uppercase tracking-tighter pt-2 border-t border-white/5 group-hover:text-blue-400">
+                        <span>Baca Berita Lengkap</span>
+                        <ExternalLink className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
                       </div>
                     </div>
                   </motion.a>
@@ -677,6 +716,40 @@ export default function App() {
 
           {/* AI Signal Sidebar */}
           <div className="space-y-4 sm:space-y-6">
+            {/* Timeframe Selector for AI Signal */}
+            <div className="bg-white/5 border border-white/10 p-3 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest flex items-center gap-1.5">
+                  <Clock className="w-3 h-3 text-emerald-400" />
+                  Timeframe Prediksi
+                </span>
+                <span className="text-[10px] font-mono text-emerald-400 font-bold uppercase">
+                  {signalTimeframe === "1H" ? "1 Jam" : signalTimeframe === "6H" ? "6 Jam" : signalTimeframe === "24H" ? "24 Jam / 1 Hari" : "1 Minggu"}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1 bg-black/40 p-1 rounded-xl border border-white/5">
+                {[
+                  { id: "1H", label: "1 Jam" },
+                  { id: "6H", label: "6 Jam" },
+                  { id: "24H", label: "24 Jam" },
+                  { id: "1W", label: "1 Mgg" },
+                ].map((tf) => (
+                  <button
+                    key={tf.id}
+                    onClick={() => setSignalTimeframe(tf.id as any)}
+                    className={cn(
+                      "py-1.5 rounded-lg text-xs font-bold transition-all uppercase tracking-wider",
+                      signalTimeframe === tf.id
+                        ? "bg-emerald-500 text-black shadow-md font-black"
+                        : "text-white/40 hover:text-white hover:bg-white/5"
+                    )}
+                  >
+                    {tf.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <button 
               onClick={handleAnalyze}
               disabled={analyzing || loading}
@@ -690,7 +763,7 @@ export default function App() {
               ) : (
                 <>
                   <BrainCircuit className="w-5 h-5" />
-                  MINTA SINYAL AI
+                  MINTA SINYAL AI ({signalTimeframe})
                 </>
               )}
             </button>
@@ -703,12 +776,17 @@ export default function App() {
                   exit={{ opacity: 0, scale: 0.95 }}
                   className="bg-white/5 border border-white/10 rounded-3xl overflow-hidden shadow-2xl relative"
                 >
-                  {/* Confidence Badge */}
-                  <div className="absolute top-4 right-4 bg-black/60 backdrop-blur-md px-2 py-1 rounded-full border border-white/10 flex items-center gap-1.5 z-10">
-                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-[10px] uppercase tracking-tighter font-black text-white/90">
-                      {signal.confidence}% Confidence
+                  {/* Confidence Badge & Timeframe Tag */}
+                  <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase">
+                      {signal.timeframe || signalTimeframe}
                     </span>
+                    <div className="bg-black/60 backdrop-blur-md px-2 py-1 rounded-full border border-white/10 flex items-center gap-1.5">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[10px] uppercase tracking-tighter font-black text-white/90">
+                        {signal.confidence}% Confidence
+                      </span>
+                    </div>
                   </div>
 
                   <div className={cn(

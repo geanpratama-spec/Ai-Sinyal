@@ -418,15 +418,105 @@ function computeTechnicalSignal(symbol: string, data: any[]) {
   };
 }
 
+async function fetchCryptoSummaryFallback(symbolList: string[]) {
+  const yahooMappings: Record<string, string> = {
+    BTCUSDT: "BTC-USD",
+    ETHUSDT: "ETH-USD",
+    SOLUSDT: "SOL-USD",
+    BNBUSDT: "BNB-USD",
+    ADAUSDT: "ADA-USD",
+    DOGEUSDT: "DOGE-USD",
+    XRPUSDT: "XRP-USD",
+  };
+
+  return await Promise.all(
+    symbolList.map(async (s) => {
+      // 1. Try Binance Vision Endpoint (Unrestricted endpoint)
+      try {
+        const r = await axios.get("https://data-api.binance.vision/api/v3/ticker/24hr", {
+          params: { symbol: s },
+          timeout: 4000,
+        });
+        if (r.data?.lastPrice && parseFloat(r.data.lastPrice) > 0) {
+          return {
+            symbol: s,
+            price: parseFloat(r.data.lastPrice),
+            change: parseFloat(r.data.priceChangePercent),
+          };
+        }
+      } catch {
+        // Fallback to next source
+      }
+
+      // 2. Try CoinCap API
+      try {
+        const coinCapIdMap: Record<string, string> = {
+          BTCUSDT: "bitcoin",
+          ETHUSDT: "ethereum",
+          SOLUSDT: "solana",
+          BNBUSDT: "binance-coin",
+          ADAUSDT: "cardano",
+          DOGEUSDT: "dogecoin",
+        };
+        const capId = coinCapIdMap[s];
+        if (capId) {
+          const capRes = await axios.get(`https://api.coincap.io/v2/assets/${capId}`, { timeout: 4000 });
+          const asset = capRes.data?.data;
+          if (asset && asset.priceUsd) {
+            return {
+              symbol: s,
+              price: parseFloat(asset.priceUsd),
+              change: parseFloat(asset.changePercent24Hr || 0),
+            };
+          }
+        }
+      } catch {
+        // Fallback to next source
+      }
+
+      // 3. Try Yahoo Finance chart endpoint
+      try {
+        const ySym = yahooMappings[s] || (s.endsWith("USDT") ? s.replace("USDT", "-USD") : s);
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}?interval=1d&range=2d`;
+        const r = await fetchYahoo(url, 5000, true);
+        const result = r.data?.chart?.result?.[0];
+        if (result) {
+          const meta = result.meta || {};
+          const price = meta.regularMarketPrice ?? 0;
+          const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? price;
+          const change = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+          if (price > 0) {
+            return { symbol: s, price, change };
+          }
+        }
+      } catch {
+        // Fallback
+      }
+
+      return { symbol: s, price: 0, change: 0, error: true };
+    })
+  );
+}
+
 async function runClaudeAnalysis(
   symbol: string,
   data: any[],
   news: any[] = [],
-  claudeApiKey: string
+  claudeApiKey: string,
+  timeframe: string = "24H"
 ) {
   if (!claudeApiKey || claudeApiKey.trim().length < 10) {
     throw new Error("Claude API key is required");
   }
+
+  const timeframeLabels: Record<string, string> = {
+    "1H": "1 Jam (Scalping / Ultra Short Term)",
+    "6H": "6 Jam (Intraday Short Term)",
+    "24H": "24 Jam / 1 Hari (Daily Swing)",
+    "1W": "1 Minggu (Weekly Mid-Term)",
+  };
+
+  const timeframeText = timeframeLabels[timeframe] || "24 Jam / 1 Hari";
 
   const currentPrice = data[data.length - 1].close;
   const recentHistory = data.slice(-40).map((d: any) => ({
@@ -448,6 +538,9 @@ async function runClaudeAnalysis(
 
   const prompt = `Kamu adalah analis keuangan dan trader profesional berpengalaman. Analisa pergerakan harga dan potensi sinyal trading berikut untuk aset ${symbol}.
 
+KERANGKA WAKTU (TIMEFRAME) PREDIKSI: ${timeframeText}.
+WAJIB: Sesuaikan target TP (Take Profit) dan Stop Loss sesuai dengan rentang volatilitas yang realistis untuk kerangka waktu ${timeframeText} ini.
+
 Riwayat 40 harga terakhir (OHLCV):
 ${JSON.stringify(recentHistory, null, 2)}
 
@@ -460,7 +553,7 @@ Berikan output sinyal trading TEPAT dalam format JSON valid tanpa penjelasan tam
   "action": "BUY",
   "price": ${currentPrice},
   "confidence": 78,
-  "reasoning": "Penjelasan mendalam & tajam khas Claude dalam Bahasa Indonesia mengenai potensi pergerakan harga, momentum, serta rekomendasi aksi.",
+  "reasoning": "Penjelasan mendalam & tajam khas Claude dalam Bahasa Indonesia mengenai potensi pergerakan harga, momentum, serta rekomendasi aksi untuk timeframe ${timeframeText}.",
   "targets": [${(currentPrice * 1.025).toFixed(4)}, ${(currentPrice * 1.05).toFixed(4)}],
   "stopLoss": ${(currentPrice * 0.975).toFixed(4)}
 }
@@ -528,13 +621,14 @@ Ketentuan:
         action: aiResult.action,
         price: Number(aiResult.price) || currentPrice,
         confidence: Number(aiResult.confidence) || 75,
-        reasoning: aiResult.reasoning || "Analisis potensi pergerakan harga dari Claude AI.",
+        reasoning: aiResult.reasoning || `Analisis potensi pergerakan harga dari Claude AI (${timeframeText}).`,
         targets: Array.isArray(aiResult.targets)
           ? aiResult.targets.map(Number)
           : [Number((currentPrice * 1.025).toFixed(4)), Number((currentPrice * 1.05).toFixed(4))],
         stopLoss: Number(aiResult.stopLoss) || Number((currentPrice * 0.975).toFixed(4)),
         timestamp: Date.now(),
         provider: `Claude (${model.includes('sonnet') ? 'Sonnet' : 'Haiku'})`,
+        timeframe: timeframe,
       };
     } catch (err: any) {
       lastError = err;
@@ -545,7 +639,7 @@ Ketentuan:
   throw lastError || new Error("Gagal memperoleh respons analisis dari Claude API.");
 }
 
-async function runGeminiAnalysis(symbol: string, data: any[], news: any[] = [], preferredApiKey?: string) {
+async function runGeminiAnalysis(symbol: string, data: any[], news: any[] = [], preferredApiKey?: string, timeframe: string = "24H") {
   const serverKey = process.env.GEMINI_API_KEY || "";
   const keysToTry: string[] = [];
 
@@ -559,6 +653,15 @@ async function runGeminiAnalysis(symbol: string, data: any[], news: any[] = [], 
   if (keysToTry.length === 0) {
     throw new Error("No Gemini API key available on server");
   }
+
+  const timeframeLabels: Record<string, string> = {
+    "1H": "1 Jam (Scalping / Ultra Short Term)",
+    "6H": "6 Jam (Intraday Short Term)",
+    "24H": "24 Jam / 1 Hari (Daily Swing)",
+    "1W": "1 Minggu (Weekly Mid-Term)",
+  };
+
+  const timeframeText = timeframeLabels[timeframe] || "24 Jam / 1 Hari";
 
   const currentPrice = data[data.length - 1].close;
   const recentHistory = data.slice(-40).map((d: any) => ({
@@ -580,6 +683,9 @@ async function runGeminiAnalysis(symbol: string, data: any[], news: any[] = [], 
 
   const prompt = `Kamu adalah analis keuangan profesional berpengalaman. Analisa data berikut untuk ${symbol}.
 
+KERANGKA WAKTU (TIMEFRAME) PREDIKSI: ${timeframeText}.
+WAJIB: Sesuaikan target TP (Take Profit) dan Stop Loss sesuai dengan rentang volatilitas yang realistis untuk kerangka waktu ${timeframeText} ini.
+
 Riwayat 40 harga terakhir (OHLCV):
 ${JSON.stringify(recentHistory, null, 2)}
 
@@ -592,7 +698,7 @@ Berikan sinyal trading dalam format JSON dengan struktur TEPAT seperti ini (jang
   "action": "BUY",
   "price": ${currentPrice},
   "confidence": 75,
-  "reasoning": "Penjelasan singkat dalam Bahasa Indonesia mengapa action ini disarankan, berdasarkan tren harga dan berita.",
+  "reasoning": "Penjelasan singkat dalam Bahasa Indonesia mengapa action ini disarankan untuk timeframe ${timeframeText}, berdasarkan tren harga dan berita.",
   "targets": [${(currentPrice * 1.02).toFixed(4)}, ${(currentPrice * 1.04).toFixed(4)}],
   "stopLoss": ${(currentPrice * 0.98).toFixed(4)}
 }
@@ -660,13 +766,14 @@ Catatan:
           action: aiResult.action,
           price: Number(aiResult.price) || currentPrice,
           confidence: Number(aiResult.confidence) || 70,
-          reasoning: aiResult.reasoning || "Analisis teknikal AI selesai.",
+          reasoning: aiResult.reasoning || `Analisis teknikal AI selesai (${timeframeText}).`,
           targets: Array.isArray(aiResult.targets)
             ? aiResult.targets.map(Number)
             : [Number((currentPrice * 1.02).toFixed(4)), Number((currentPrice * 1.04).toFixed(4))],
           stopLoss: Number(aiResult.stopLoss) || Number((currentPrice * 0.98).toFixed(4)),
           timestamp: Date.now(),
           provider: "Google Gemini 3.6",
+          timeframe: timeframe,
         };
       } catch (err: any) {
         lastErr = err;
@@ -1131,23 +1238,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     try {
       if (category === "crypto") {
-        const results = await Promise.all(
-          symbolList.map(async (s) => {
-            try {
-              const r = await axios.get(
-                "https://api.binance.com/api/v3/ticker/24hr",
-                { params: { symbol: s }, timeout: 5000 }
-              );
-              return {
-                symbol: s,
-                price: parseFloat(r.data.lastPrice),
-                change: parseFloat(r.data.priceChangePercent),
-              };
-            } catch {
-              return { symbol: s, price: 0, change: 0, error: true };
-            }
-          })
-        );
+        let results: any[] = [];
+        try {
+          results = await Promise.all(
+            symbolList.map(async (s) => {
+              try {
+                const r = await axios.get(
+                  "https://api.binance.com/api/v3/ticker/24hr",
+                  { params: { symbol: s }, timeout: 4000 }
+                );
+                return {
+                  symbol: s,
+                  price: parseFloat(r.data.lastPrice),
+                  change: parseFloat(r.data.priceChangePercent),
+                };
+              } catch {
+                return { symbol: s, price: 0, change: 0, error: true };
+              }
+            })
+          );
+        } catch {
+          results = [];
+        }
+
+        const needsFallback = results.length === 0 || results.every((item) => !item.price || item.price === 0 || item.error);
+        if (needsFallback) {
+          results = await fetchCryptoSummaryFallback(symbolList);
+        }
+
         setCache(cacheKey, results);
         return res.json(results);
       } else {
